@@ -1,78 +1,84 @@
 import numpy as np
 import tensorflow as tf
-from PIL import Image, ImageDraw
+import cv2
+from picamera2 import Picamera2
+import time
 
-# Load TFLite model
+# Inisialisasi kamera
+picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(main={"size": (640, 640)}))
+picam2.start()
+time.sleep(2)  # Waktu untuk kamera menyesuaikan
+
+# Load model TFLite
 model_path = 'tflite-model/best_float32.tflite'
 interpreter = tf.lite.Interpreter(model_path=model_path)
 interpreter.allocate_tensors()
 
-# Load image
-image_path = 'test.jpg'
-image = Image.open(image_path)
-
-# Resize the image to model's expected input size (640x640)
-image_resized = image.resize((640, 640))
-image_array = np.array(image_resized) / 255.0  # Normalize
-
-# Add batch dimension
-image_input = np.expand_dims(image_array, axis=0).astype(np.float32)
-
-# Get input/output tensor details
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
-# Set input tensor
-interpreter.set_tensor(input_details[0]['index'], image_input)
-
-# Run inference
-interpreter.invoke()
-
-# Get output data
-output_data = interpreter.get_tensor(output_details[0]['index'])
-
-# Print the shape and check the output data
-print(f"Output data shape: {output_data.shape}")
-print(f"Sample output: {output_data[0]}")
-
-# Post-process results
-threshold = 0.3  # Confidence threshold
-
-# Initialize PIL ImageDraw for drawing
-draw = ImageDraw.Draw(image_resized)
-
-# Class names (modify based on your classes)
 class_names = ['fire', 'smoke']
+threshold = 0.2  # Confidence threshold
 
-# Iterate over detections (8400 possible detections)
-for i in range(output_data.shape[2]):  # Loop through each detection
-    # Extract the 6 values for each detection (bbox + confidence + class probs)
-    detection = output_data[0, :, i]
+# Untuk hitung FPS
+prev_time = time.time()
 
-    # Extract bounding box (xywh format)
-    bbox = detection[0:4]  # First 4 values are the bounding box
-    confidence = detection[4]  # Confidence score
+# Loop real-time
+while True:
+    # Hitung waktu mulai frame
+    start_time = time.time()
+
+    # Capture frame dari kamera
+    frame = picam2.capture_array()
+    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image_resized = cv2.resize(image_rgb, (640, 640))
     
-    # If confidence is above the threshold, consider this detection
-    if confidence > threshold:
-        class_probs = detection[5:]  # Class probabilities
-        class_id = np.argmax(class_probs)  # Class with highest probability
-        class_name = class_names[class_id]  # Get class name
-        
-        # Convert bbox (xywh to xyxy)
-        x_center, y_center, width, height = bbox
-        x1 = int((x_center - width / 2) * image_resized.width)
-        y1 = int((y_center - height / 2) * image_resized.height)
-        x2 = int((x_center + width / 2) * image_resized.width)
-        y2 = int((y_center + height / 2) * image_resized.height)
+    # Preprocessing: normalize dan expand dims
+    input_data = np.expand_dims(image_resized / 255.0, axis=0).astype(np.float32)
 
-        # Draw bounding box on the image
-        draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-        label = f"{class_name} {confidence:.2f}"
-        draw.text((x1, y1), label, fill="red")
+    # Inference
+    interpreter.set_tensor(input_details[0]['index'], input_data)
+    interpreter.invoke()
+    output_data = interpreter.get_tensor(output_details[0]['index'])
 
-# Show image with bounding boxes
-image_resized.show()
+    # Post-processing
+    for i in range(output_data.shape[2]):
+        detection = output_data[0, :, i]
+        bbox = detection[0:4]
+        confidence = detection[4]
 
-# Save the image with bounding boxes if needed
-image_resized.save('output_with_bboxes.jpg')
+        if confidence > threshold:
+            class_probs = detection[5:]
+            class_id = np.argmax(class_probs)
+            class_name = class_names[class_id]
+
+            x_center, y_center, width, height = bbox
+            x1 = int((x_center - width / 2) * 640)
+            y1 = int((y_center - height / 2) * 640)
+            x2 = int((x_center + width / 2) * 640)
+            y2 = int((y_center + height / 2) * 640)
+
+            # Gambar kotak dan label
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            label = f"{class_name}: {confidence:.2f}"
+            cv2.putText(frame, label, (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+    # Hitung dan tampilkan FPS
+    end_time = time.time()
+    fps = 1 / (end_time - start_time)
+    cv2.putText(frame, f"FPS: {fps:.2f}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+    # Tampilkan frame
+    cv2.imshow("Real-time Detection", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+
+    # Tekan 'q' untuk keluar
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Bersihkan
+cv2.destroyAllWindows()
+picam2.stop()

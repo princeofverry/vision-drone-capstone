@@ -1,10 +1,12 @@
+from picamera2 import Picamera2
 import cv2
 import numpy as np
+import time
 
 # Path ke cfg dan weights
 config_path = "darknet/cfg/custom-yolov4-tiny-detector.cfg"
 weights_path = "darknet/backup/custom-yolov4-tiny-detector_best.weights"
-names_path = "darknet/data/obj.names"  # file ini isinya daftar nama kelas (1 per baris)
+names_path = "darknet/data/obj.names"
 
 # Load class names
 with open(names_path, "r") as f:
@@ -15,25 +17,34 @@ net = cv2.dnn.readNetFromDarknet(config_path, weights_path)
 net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
 net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
 
-# Ambil layer output
+# Output layer names
 layer_names = net.getLayerNames()
-output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]  # Fix indexing
+output_layers = [layer_names[i - 1] for i in net.getUnconnectedOutLayers()]
 
-# Buka webcam (0 = default laptop cam)
-cap = cv2.VideoCapture(0)
+# Inisialisasi PiCamera2
+picam2 = Picamera2()
+picam2.preview_configuration.main.size = (640, 480)
+picam2.preview_configuration.main.format = "BGR888"
+picam2.configure("preview")
+picam2.start()
+time.sleep(2)  # Tunggu kamera stabil
+
+# Variabel buat FPS
+prev_time = time.time()
 
 while True:
-    ret, frame = cap.read()
+    start_time = time.time()
+
+    frame = picam2.capture_array()
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
     height, width = frame.shape[:2]
 
-    # Convert ke blob
     blob = cv2.dnn.blobFromImage(frame, 1/255.0, (416, 416), swapRB=True, crop=False)
     net.setInput(blob)
     outputs = net.forward(output_layers)
 
     boxes, confidences, class_ids = [], [], []
 
-    # Proses hasil deteksi
     for output in outputs:
         for detection in output:
             scores = detection[5:]
@@ -41,7 +52,6 @@ while True:
             confidence = scores[class_id]
 
             if confidence > 0.5:
-                # Ambil koordinat box
                 center_x = int(detection[0] * width)
                 center_y = int(detection[1] * height)
                 w = int(detection[2] * width)
@@ -53,10 +63,8 @@ while True:
                 confidences.append(float(confidence))
                 class_ids.append(class_id)
 
-    # NMS untuk hilangkan overlapping box
     indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
 
-    # Gambar hasil deteksi
     if len(indexes) > 0:
         for i in indexes.flatten():
             x, y, w, h = boxes[i]
@@ -64,12 +72,17 @@ while True:
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0,255,0), 2)
             cv2.putText(frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
 
-    # Tampilkan frame
-    cv2.imshow("YOLOv4-Tiny Webcam", frame)
+    # Hitung FPS
+    end_time = time.time()
+    fps = 1 / (end_time - start_time)
+    fps_text = f"FPS: {fps:.2f}"
+    cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
 
-    # Tekan 'q' buat keluar
+    # Tampilkan frame
+    cv2.imshow("YOLOv4-Tiny PiCamera2", frame)
+
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-cap.release()
+picam2.close()
 cv2.destroyAllWindows()
